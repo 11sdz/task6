@@ -14,14 +14,24 @@
 #include <linux/kobject.h>
 #include <linux/string.h> 
 #include <linux/sysfs.h> 
+#include <linux/proc_fs.h> /* Necessary because we use proc fs */ 
+#include <linux/seq_file.h> /* for seq_file */ 
+#include <linux/version.h> 
 
-static int device_open(struct inode *, struct file *); 
-static int device_release(struct inode *, struct file *); 
-static ssize_t device_read(struct file *, char __user *, size_t, loff_t *); 
+
+#define PROC_NAME "iter"
+
+static int device_open(struct inode *, struct file *);  //open
+static int device_release(struct inode *, struct file *); //release
+static ssize_t device_read(struct file *, char __user *, size_t, loff_t *); //chardev read
 static ssize_t device_write(struct file *, const char __user *, size_t, 
-                            loff_t *);
-static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned long ioctl_param);
-static ssize_t bytes_registered_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) ;
+                            loff_t *);                                      //chardev write
+static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned long ioctl_param);//IO control
+static ssize_t bytes_registered_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) ; // \sys\kernel\chardev\bytes_registered
+static void *my_seq_start(struct seq_file *s, loff_t *pos) ; //seqfile start()
+static void *my_seq_next(struct seq_file *s, void *v, loff_t *pos); //seqfile next()
+static void my_seq_stop(struct seq_file *s, void *v); //seqfile stop();
+static int my_seq_show(struct seq_file *s, void *v);//seqfile show()
 
 #define SUCCESS 0
 #define DEVICE_NAME "chardev"
@@ -43,6 +53,8 @@ MODULE_PARM_DESC(key, "An integer");
 
 static struct class *cls;
 
+static DEFINE_MUTEX(mymutex); 
+
 static int bytes_registered=0;
 static struct kobject *mykobject; 
 static struct kobj_attribute bytes_registered_attr = 
@@ -58,11 +70,22 @@ static struct file_operations chardev_fops = {
     .release = device_release, 
     .unlocked_ioctl = device_ioctl,
 
+};
+
+static struct seq_operations my_seq_ops = { 
+    .start = my_seq_start, 
+    .next = my_seq_next, 
+    .stop = my_seq_stop, 
+    .show = my_seq_show, 
 }; 
+
 //initilaize
 static int __init chardev_init(void){
+    
+    struct proc_dir_entry *entry;
     printk(KERN_INFO "(chardev init)\n");
     memset(message,0,BUFFER);
+    mutex_init(&mymutex);
 
     major= register_chrdev(0,DEVICE_NAME,&chardev_fops);
     if(major<0){
@@ -84,6 +107,15 @@ static int __init chardev_init(void){
                 "in /sys/kernel/chardev\n"); 
     }
 
+    entry = proc_create_seq(PROC_NAME,0,NULL,&my_seq_ops);
+
+    if (entry == NULL) { 
+        remove_proc_entry(PROC_NAME, NULL); 
+        pr_debug("Error: Could not initialize /proc/%s\n", PROC_NAME); 
+        return -ENOMEM; 
+
+    }
+
     cls = class_create(THIS_MODULE, DEVICE_NAME); 
     device_create(cls, NULL, MKDEV(major, 0), NULL, DEVICE_NAME); 
     printk(KERN_INFO "key = %d\n",key);
@@ -99,11 +131,19 @@ static void __exit chardev_exit(void){
 
     class_destroy(cls); 
 
+    remove_proc_entry(PROC_NAME, NULL); 
+    pr_debug("/proc/%s removed\n", PROC_NAME); 
+
     /* Unregister the device */ 
     unregister_chrdev(major, DEVICE_NAME); 
 } 
 
 static int device_open(struct inode * iNode, struct file * myFile){
+    int ret=0;
+    ret = mutex_trylock(&mymutex); 
+    if(ret!=0){
+        printk(KERN_INFO "mutex is locked\n");
+    }
     if(is_open==1){
         printk(KERN_INFO "already open\n");
         return -EBUSY;
@@ -120,6 +160,10 @@ static int device_release(struct inode * iNode, struct file * myFile){
     }
     is_open =0;
     module_put(THIS_MODULE);
+    mutex_unlock(&mymutex);
+    if (mutex_is_locked(&mymutex) == 0) {
+        printk("Tmutex unlock!\n");
+    }
     return SUCCESS; 
 }
 
@@ -132,7 +176,7 @@ static ssize_t device_read(struct file * myFile, char __user * buffer, size_t si
     if(offset ==NULL){
         return -1;
     }
-
+    
     while((bytes_read<BUFFER) && (*offset < buffer_size)){
         key_pos=read_offset % keylen;//encryption using each one of the bytes 0,1,2,3 .. 4 bytes
         message[read_offset]=message[read_offset]^bytes_key[key_pos];//decrypt
@@ -144,15 +188,13 @@ static ssize_t device_read(struct file * myFile, char __user * buffer, size_t si
         if(read_offset>=BUFFER-1){
             read_offset=0;
         }
+        mutex_unlock(&mymutex);
     }
     
     printk(KERN_INFO "%s\n",message);
-
     printk(KERN_INFO "device_read\n");
-
+    
     return bytes_read;
-
-
 }
 static ssize_t device_write(struct file *myFile, const char __user * buffer, size_t sizeT, 
                             loff_t * offset){
@@ -161,7 +203,8 @@ static ssize_t device_write(struct file *myFile, const char __user * buffer, siz
     size_t keylen=strlen(bytes_key);
     if(offset==NULL){
         return -EINVAL;
-    }              
+    }          
+    
     while(bytes_write< sizeT){
         get_user(message[write_offset], &buffer[bytes_write]);
         key_pos=write_offset % keylen;
@@ -175,9 +218,10 @@ static ssize_t device_write(struct file *myFile, const char __user * buffer, siz
     }
     
     buffer_size=strlen(message);
-    bytes_registered=bytes_registered+buffer_size;
+    bytes_registered=buffer_size;
     printk(KERN_INFO "device_write\n");
     printk(KERN_INFO "(%s)",message);
+    
     return bytes_write;
 }
 static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned long ioctl_param){
@@ -186,7 +230,7 @@ static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned lon
     int idx=0,keypos=0;//same for read
     unsigned char* bytes_key =NULL;
     switch(ioctl_num){
-        case IOCTL_CHANGEKEY:
+        case IOCTL_CHANGEKEY:  
             if(copy_from_user(&newkey, (int __user*)ioctl_param,sizeof(int))){
                 return -EFAULT;
             }
@@ -194,7 +238,9 @@ static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned lon
                 //same key data is already encrypted
                 break;
             }
+            
             printk(KERN_INFO "new key %d\n",newkey);
+            
             //decrypt using old key
             bytes_key = (unsigned char*)&key;
             keylen= strlen(bytes_key);
@@ -219,6 +265,36 @@ static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned lon
 
 static ssize_t bytes_registered_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) {
     return sprintf(buf,"bytes written %d\n",bytes_registered);
+}
+static size_t * pcounter=NULL;
+static void *my_seq_start(struct seq_file *s, loff_t *pos){
+    static size_t counter = 0; 
+    pcounter=&counter;
+    /* beginning a new sequence? */ 
+    if (*pos == 0) { 
+        /* yes => return a non null value to begin the sequence */ 
+        return &counter; 
+    } 
+    /* no => it is the end of the sequence, return end to stop reading */ 
+    *pos = 0; 
+
+    return NULL;
+}
+static void *my_seq_next(struct seq_file *s, void *v, loff_t *pos){
+    size_t *tmp_v = (size_t *)v; 
+    (*tmp_v)++; 
+    (*pos)++; 
+    return NULL;
+}
+static void my_seq_stop(struct seq_file *s, void *v){
+    if(!(*pcounter<buffer_size-1)){
+        *pcounter=0;
+    }
+}
+static int my_seq_show(struct seq_file *s, void *v){
+    size_t idx=*(size_t*)v;
+    seq_printf(s, "%c\n", message[idx]); 
+    return 0; 
 }
 
 
