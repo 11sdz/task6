@@ -171,17 +171,17 @@ static int device_release(struct inode * iNode, struct file * myFile){
 static ssize_t device_read(struct file * myFile, char __user * buffer, size_t sizeT, loff_t * offset){
     int bytes_read=0;//how many bytes we read
     int read_offset=0;
-    unsigned char* bytes_key =(unsigned char*)&key;// casting our key to 4 bytes each byte will be represented as char
-    size_t keylen=strlen(bytes_key);
+    //unsigned char* bytes_key =(unsigned char*)&key;// casting our key to 4 bytes each byte will be represented as char
+    //size_t keylen=strlen(bytes_key);
     if(offset ==NULL){
         return -1;
     }
     
     while((bytes_read<BUFFER) && (*offset < buffer_size)){
-        key_pos=read_offset % keylen;//encryption using each one of the bytes 0,1,2,3 .. 4 bytes
-        message[read_offset]=message[read_offset]^bytes_key[key_pos];//decrypt
+        //key_pos=read_offset % keylen;//encryption using each one of the bytes 0,1,2,3 .. 4 bytes
+        //message[read_offset]=message[read_offset]^bytes_key[key_pos];//decrypt
         put_user(message[read_offset],&buffer[*offset]);//printing on user output
-        message[read_offset]=message[read_offset]^bytes_key[key_pos];//encrypt
+        //message[read_offset]=message[read_offset]^bytes_key[key_pos];//encrypt
         bytes_read++;
         read_offset++;
         *offset=*offset+1;
@@ -231,6 +231,7 @@ static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned lon
     unsigned char* bytes_key =NULL;
     switch(ioctl_num){
         case IOCTL_CHANGEKEY:  
+            
             if(copy_from_user(&newkey, (int __user*)ioctl_param,sizeof(int))){
                 return -EFAULT;
             }
@@ -240,7 +241,7 @@ static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned lon
             }
             
             printk(KERN_INFO "new key %d\n",newkey);
-            
+            printk(KERN_INFO "old key encryption (%s)",message);
             //decrypt using old key
             bytes_key = (unsigned char*)&key;
             keylen= strlen(bytes_key);
@@ -248,6 +249,7 @@ static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned lon
                 keypos= idx % keylen;
                 message[idx]=message[idx]^bytes_key[keypos];
             }
+            printk(KERN_INFO "decrypted (%s)",message);
             //encrypt using new key
             key=newkey;
             bytes_key = (unsigned char*)&key;
@@ -256,6 +258,7 @@ static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned lon
                 keypos= idx % keylen;
                 message[idx]=message[idx]^bytes_key[keypos];
             }
+            printk(KERN_INFO "newkey encryption (%s)",message);
             break;
         default:
             return -EINVAL;
