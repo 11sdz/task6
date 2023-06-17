@@ -21,7 +21,7 @@ static ssize_t device_read(struct file *, char __user *, size_t, loff_t *);
 static ssize_t device_write(struct file *, const char __user *, size_t, 
                             loff_t *);
 static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned long ioctl_param);
-// static ssize_t bytes_registered_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) ;
+static ssize_t bytes_registered_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) ;
 
 #define SUCCESS 0
 #define DEVICE_NAME "chardev"
@@ -43,10 +43,10 @@ MODULE_PARM_DESC(key, "An integer");
 
 static struct class *cls;
 
-// static int bytes_registered=0;
-// static struct kobject *mymodule; 
-// static struct kobj_attribute bytes_registered_attr = 
-//                     __ATTR(bytes_registered, 0660, bytes_registered_show, NULL); 
+static int bytes_registered=0;
+static struct kobject *mykobject; 
+static struct kobj_attribute bytes_registered_attr = 
+                     __ATTR(bytes_registered, 0660, bytes_registered_show, NULL); 
 
 
 //file operations struct we assign each method
@@ -74,6 +74,16 @@ static int __init chardev_init(void){
 
     buffer_size=strlen(message);
 
+    mykobject = kobject_create_and_add("chardev",kernel_kobj);
+    if(!mykobject){
+        return -ENOMEM;
+    }
+
+    if(sysfs_create_file(mykobject,&bytes_registered_attr.attr)){
+        pr_info("failed to create the bytes_regitered file " 
+                "in /sys/kernel/chardev\n"); 
+    }
+
     cls = class_create(THIS_MODULE, DEVICE_NAME); 
     device_create(cls, NULL, MKDEV(major, 0), NULL, DEVICE_NAME); 
     printk(KERN_INFO "key = %d\n",key);
@@ -84,6 +94,7 @@ static int __init chardev_init(void){
 
 
 static void __exit chardev_exit(void){
+    kobject_put(mykobject);
     device_destroy(cls, MKDEV(major, 0)); 
 
     class_destroy(cls); 
@@ -158,12 +169,13 @@ static ssize_t device_write(struct file *myFile, const char __user * buffer, siz
         bytes_write++;
         write_offset++;
         if(write_offset>=BUFFER-1){
+            //start writing from begining
             write_offset=0;
         }
     }
     
     buffer_size=strlen(message);
-
+    bytes_registered=bytes_registered+buffer_size;
     printk(KERN_INFO "device_write\n");
     printk(KERN_INFO "(%s)",message);
     return bytes_write;
@@ -204,6 +216,11 @@ static long int device_ioctl(struct file *,unsigned int ioctl_num , unsigned lon
     }
     return SUCCESS;
 }
+
+static ssize_t bytes_registered_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) {
+    return sprintf(buf,"bytes written %d\n",bytes_registered);
+}
+
 
 module_init(chardev_init); 
 module_exit(chardev_exit); 
